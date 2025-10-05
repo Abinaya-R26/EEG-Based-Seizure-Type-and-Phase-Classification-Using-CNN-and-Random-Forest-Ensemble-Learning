@@ -1,0 +1,114 @@
+clc; clear; close all;
+
+Fs = 200;  % Sampling frequency
+parent_folder = 'IMF3_MAT'; % main folder containing class subfolders
+output_file = 'Seizure_Features_With_Type_Labels.csv';
+
+% Get list of all MAT files in subfolders
+files = dir(fullfile(parent_folder,'**','*.mat'));
+
+all_features = [];
+Type_Labels = {};
+
+for k = 1:length(files)
+    % --- Load signal ---
+    data = load(fullfile(files(k).folder, files(k).name));
+    varNames = fieldnames(data);
+    x = data.(varNames{1});  % IMF3 signal
+    
+    % --- Basic Statistical Features ---
+    Mean_EEG_Amplitude = mean(x);
+    EEG_Std_Dev = std(x);
+    EEG_Skewness = mean((x-mean(x)).^3) / (std(x)^3 + eps);  
+    EEG_Kurtosis = mean((x-mean(x)).^4) / (std(x)^4 + eps);
+    Zero_Crossing_Rate = sum(abs(diff(x>0))) / length(x);
+    Root_Mean_Square = rms(x);
+    Peak_to_Peak_Amplitude = peak2peak(x);
+    Signal_Energy = sum(x.^2);
+    Variance_of_EEG_Signals = var(x);
+    Interquartile_Range = iqr(x);
+    
+    % --- Frequency Bands ---
+    [pxx,f] = pwelch(x,[],[],[],Fs);
+    Delta_Band = bandpower(pxx,f,[0.5 4],'psd');
+    Theta_Band = bandpower(pxx,f,[4 8],'psd');
+    Alpha_Band = bandpower(pxx,f,[8 13],'psd');
+    Beta_Band  = bandpower(pxx,f,[13 30],'psd');
+    Gamma_Band = bandpower(pxx,f,[30 70],'psd');
+    TotalPower = bandpower(pxx,f,[0.5 70],'psd');
+    
+    % --- Spectral Features ---
+    Power_Spectral_Density = mean(pxx);
+    Spectral_Entropy = -sum(pxx.*log(pxx+eps))/log(length(pxx));
+    cumPower = cumtrapz(f,pxx);
+    SEF95 = f(find(cumPower >= 0.95*max(cumPower),1));
+    MF = f(find(cumPower >= 0.5*max(cumPower),1));
+    
+    % --- Seizure-Specific Features ---
+    Line_Length = sum(abs(diff(x)));
+    
+    % Adaptive threshold for spikes
+    threshold = max(0.5*std(x), 1e-6);  
+    warning('off','signal:findpeaks:largeMinPeakHeight'); 
+    [~,locs] = findpeaks(x,'MinPeakHeight',threshold);
+    warning('on','signal:findpeaks:largeMinPeakHeight');  
+    Spike_Count = length(locs);
+    Theta_Alpha_Ratio = Theta_Band / (Alpha_Band + eps);
+    Beta_Alpha_Ratio  = Beta_Band / (Alpha_Band + eps);
+    Delta_Theta_Ratio = Delta_Band / (Theta_Band + eps);
+    Seizure_Energy_Index = (Delta_Band + Theta_Band + Beta_Band) / (TotalPower + eps);
+    
+    % --- Hjorth Parameters ---
+    dx = diff(x);
+    ddx = diff(dx);
+    Activity = var(x);
+    Mobility = sqrt(var(dx)/Activity);
+    Complexity = sqrt(var(ddx)/var(dx)) / Mobility;
+    
+    % --- Wavelet Features ---
+    [c,l] = wavedec(x,4,'db4');
+    Wavelet_Energy = sum(c.^2);
+    p = c.^2 / sum(c.^2);
+    Wavelet_Entropy = -sum(p.*log(p+eps));
+    
+    % --- Store Features ---
+    features = [Mean_EEG_Amplitude, EEG_Std_Dev, EEG_Skewness, EEG_Kurtosis, ...
+        Zero_Crossing_Rate, Root_Mean_Square, Peak_to_Peak_Amplitude, ...
+        Signal_Energy, Variance_of_EEG_Signals, Interquartile_Range, ...
+        Delta_Band, Theta_Band, Alpha_Band, Beta_Band, Gamma_Band, ...
+        Power_Spectral_Density, Spectral_Entropy, SEF95, MF, ...
+        Line_Length, Spike_Count, Theta_Alpha_Ratio, Beta_Alpha_Ratio, ...
+        Delta_Theta_Ratio, Seizure_Energy_Index, Activity, Mobility, Complexity, ...
+        Wavelet_Energy, Wavelet_Entropy];
+    
+    all_features = [all_features; features];
+    
+    % --- Assign Type Label based on Folder ---
+    parts = strsplit(files(k).folder, filesep);
+    if length(parts) >= 1
+        type_folder  = parts{end};    % Type (GNSZ, ABSZ, etc.)
+    else
+        type_folder  = 'Unspecified';
+    end
+    
+    Type_Labels{end+1,1} = type_folder;
+end
+
+% --- Convert to Table ---
+feature_names = {'Mean_EEG_Amplitude','EEG_Std_Dev','EEG_Skewness','EEG_Kurtosis', ...
+    'Zero_Crossing_Rate','Root_Mean_Square','Peak_to_Peak_Amplitude','Signal_Energy', ...
+    'Variance_of_EEG_Signals','Interquartile_Range','Delta_Band_Power','Theta_Band_Power', ...
+    'Alpha_Band_Power','Beta_Band_Power','Gamma_Band_Power','Power_Spectral_Density', ...
+    'Spectral_Entropy','SEF95','Median_Frequency','Line_Length','Spike_Count', ...
+    'Theta_Alpha_Ratio','Beta_Alpha_Ratio','Delta_Theta_Ratio','Seizure_Energy_Index', ...
+    'Hjorth_Activity','Hjorth_Mobility','Hjorth_Complexity','Wavelet_Energy','Wavelet_Entropy'};
+
+T = array2table(all_features,'VariableNames',feature_names);
+
+% Add Type label as column
+T.Type_Label  = Type_Labels;
+
+% --- Save Table ---
+writetable(T,output_file);
+
+disp('✅ Feature extraction complete: Features + Type labels saved!');
