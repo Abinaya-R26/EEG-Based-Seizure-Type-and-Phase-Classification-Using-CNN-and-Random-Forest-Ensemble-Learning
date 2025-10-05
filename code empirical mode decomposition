@@ -1,0 +1,83 @@
+clc; clear; close all;
+
+Fs = 200; % Sampling frequency
+parent_folder = fullfile(pwd, 'Filtered_Mat'); 
+if ~exist(parent_folder,'dir')
+    error('Folder not found: %s', parent_folder);
+end
+
+% --- Create folders ---
+emd_mat_folder = fullfile(parent_folder, 'EMD_MAT');      % full 10 IMF MAT
+emd_png_folder = fullfile(parent_folder, 'EMD_PNG');      % full 10 IMF PNG
+imf3_mat_folder = fullfile(parent_folder, 'IMF3_MAT');    % IMF3 MAT
+imf3_png_folder = fullfile(parent_folder, 'IMF3_PNG');    % IMF3 PNG
+folders = {emd_mat_folder, emd_png_folder, imf3_mat_folder, imf3_png_folder};
+for i = 1:length(folders)
+    if ~exist(folders{i}, 'dir'); mkdir(folders{i}); end
+end
+
+% --- List all MAT files recursively ---
+files = dir(fullfile(parent_folder,'**','*.mat'));
+fprintf('Found %d MAT-files.\n', length(files));
+
+for k = 1:length(files)
+    fprintf('Processing: %s\n', files(k).name);
+    
+    % --- Load EEG ---
+    data = load(fullfile(files(k).folder, files(k).name));
+    varNames = fieldnames(data);
+    if isempty(varNames)
+        warning('No variable found in %s', files(k).name);
+        continue;
+    end
+    EEG = data.(varNames{1});
+    EEG = EEG(:);
+    if isempty(EEG)
+        warning('%s is empty, skipping', files(k).name);
+        continue;
+    end
+    
+    % --- Perform EMD (max 10 IMFs) ---
+    imf = emd(EEG, 'MaxNumIMF', 10);
+    if isempty(imf)
+        warning('EMD failed for %s', files(k).name);
+        continue;
+    end
+    
+    %% --- Save full 10 IMF MAT ---
+    EMD_signal = imf; %#ok<NASGU>
+    save(fullfile(emd_mat_folder,[files(k).name(1:end-4) '_EMD.mat']), 'EMD_signal');
+    
+    %% --- Plot all 10 IMFs in one figure ---
+    figure('visible','off');
+    numIMF = size(imf,2);
+    for n = 1:numIMF
+        subplot(numIMF,1,n);
+        plot((0:length(imf(:,n))-1)/Fs, imf(:,n));
+        ylabel(['IMF ' num2str(n)]);
+        if n==1
+            title(['Full EMD: ' files(k).name],'Interpreter','none');
+        end
+        grid on;
+    end
+    xlabel('Time (s)');
+    saveas(gcf, fullfile(emd_png_folder,[files(k).name(1:end-4) '_EMD.png']));
+    close;
+    
+    %% --- Save IMF3 separately if exists ---
+    if numIMF >= 3
+        IMF3 = imf(:,3);
+        save(fullfile(imf3_mat_folder,[files(k).name(1:end-4) '_IMF3.mat']),'IMF3');
+        
+        figure('visible','off');
+        plot((0:length(IMF3)-1)/Fs, IMF3);
+        xlabel('Time (s)'); ylabel('Amplitude'); grid on;
+        title(['IMF3: ' files(k).name],'Interpreter','none');
+        saveas(gcf, fullfile(imf3_png_folder,[files(k).name(1:end-4) '_IMF3.png']));
+        close;
+    else
+        warning('%s has less than 3 IMFs, skipping IMF3', files(k).name);
+    end
+end
+
+disp('Pipeline complete: Full 10 IMFs in one image + IMF3 saved separately.');
