@@ -1,0 +1,122 @@
+clc; clear; close all;
+
+Fs = 200; % Sampling frequency
+parent_folder = 'Dataset'; % Folder containing original EEG folders (Normal, PreIctal, InterIctal, seizure types, etc.)
+
+% Get list of stage/type folders
+folders = dir(parent_folder);
+folders = folders([folders.isdir] & ~ismember({folders.name},{'.','..'}));
+
+for f = 1:length(folders)
+    stage_name = folders(f).name;
+    folder_in = fullfile(parent_folder, stage_name);       % Original EEG files
+    folder_mat = fullfile(parent_folder, stage_name, 'FilteredMAT'); % Filtered MAT
+    folder_png = fullfile(parent_folder, stage_name, 'FilteredPNG'); % PNG plots
+    
+    if ~exist(folder_mat,'dir')
+        mkdir(folder_mat);
+    end
+    if ~exist(folder_png,'dir')
+        mkdir(folder_png);
+    end
+    
+    % List all MAT-files in the folder
+    files = dir(fullfile(folder_in,'*.mat'));
+    
+    for k = 1:length(files)
+        % Load EEG
+        load(fullfile(folder_in, files(k).name)); % expects variable 'EEG'
+        
+        % --- Bandpass Butterworth filter 0.5-70 Hz ---
+        [b_bp,a_bp] = butter(4,[0.5 70]/(Fs/2));
+        eeg_bp = filtfilt(b_bp,a_bp,EEG);
+        
+        % --- Notch filter 50 Hz ---
+        wo = 50/(Fs/2);  % notch frequency
+        bw = wo/35;      % bandwidth
+        [b_notch,a_notch] = iirnotch(wo,bw);
+        eeg_filtered = filtfilt(b_notch,a_notch,eeg_bp);
+        
+        % --- Save filtered MAT file ---
+        EEG_filtered = eeg_filtered;
+        filename_mat = fullfile(folder_mat, files(k).name);
+        save(filename_mat,'EEG_filtered');
+        
+        % --- Save PNG plot ---
+        figure('visible','off');
+        plot((0:length(EEG_filtered)-1)/Fs,EEG_filtered);
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+        title([stage_name ' Filtered EEG: ' files(k).name]);
+        grid on;
+        filename_png = fullfile(folder_png, [files(k).name(1:end-4) '.png']);
+        saveas(gcf,filename_png);
+        close;
+    end
+end
+
+disp('All EEG files filtered and saved as MAT and PNG successfully!');
+
+%% 
+clc; clear; close all;
+
+Fs = 200; % Sampling frequency
+parent_folder = 'Dataset'; % Folder containing your 4 EEG folders
+folders = {'PreIctal','InterIctal','Ictal'};
+
+% Create single folders for saving
+folder_mat = fullfile(parent_folder, 'AllMAT');
+folder_png = fullfile(parent_folder, 'AllPNG');
+if ~exist(folder_mat,'dir')
+    mkdir(folder_mat);
+end
+if ~exist(folder_png,'dir')
+    mkdir(folder_png);
+end
+
+for f = 1:length(folders)
+    folder_name = folders{f};
+    folder_in = fullfile(parent_folder, folder_name);
+    
+    % List all MAT-files
+    files = dir(fullfile(folder_in,'*.mat'));
+    
+    for k = 1:length(files)
+        % --- Load EEG ---
+        data = load(fullfile(folder_in, files(k).name));
+        varNames = fieldnames(data);
+        if isempty(varNames)
+            warning('No variable found in %s', files(k).name);
+            continue;
+        end
+        EEG = data.(varNames{1});  % Use the first variable
+        
+        % --- Bandpass 0.5-70 Hz ---
+        [b_bp,a_bp] = butter(4,[0.5 70]/(Fs/2));
+        EEG = filtfilt(b_bp,a_bp,EEG);
+        
+        % --- Notch 50 Hz ---
+        wo = 50/(Fs/2);
+        bw = wo/35;
+        [b_notch,a_notch] = iirnotch(wo,bw);
+        EEG = filtfilt(b_notch,a_notch,EEG);
+        
+        % --- Save filtered MAT file ---
+        mat_name = sprintf('%s_%s.mat', folder_name, files(k).name(1:end-4));
+        save(fullfile(folder_mat, mat_name), 'EEG');
+        
+        % --- Save PNG plot ---
+        figure('visible','off');
+        plot((0:length(EEG)-1)/Fs, EEG);
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+        title([folder_name ' EEG: ' files(k).name],'Interpreter','none');
+        grid on;
+        png_name = sprintf('%s_%s.png', folder_name, files(k).name(1:end-4));
+        saveas(gcf, fullfile(folder_png, png_name));
+        close;
+    end
+end
+
+disp('All EEGs filtered, saved as MAT and PNG successfully!');
+
