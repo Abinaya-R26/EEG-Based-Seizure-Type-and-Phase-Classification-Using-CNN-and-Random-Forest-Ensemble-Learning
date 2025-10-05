@@ -1,0 +1,186 @@
+%% Predict on Training Images and Extract EEG Features (Phase) with All Features
+clc; clear; close all;
+
+% 1. Load trained GoogLeNet
+load('trainedGoogLeNetSeizurePhase.mat','net');
+
+% 2. Folders
+trainFolder = 'Dataset_phase';        % spectrogram images
+signalFolder = 'Dataset_eeg_phase';   % EEG .mat signals
+outputPlotFolder = 'Marked_EEG_Plots';
+if ~exist(outputPlotFolder,'dir')
+    mkdir(outputPlotFolder);
+end
+
+% 3. Image datastore
+imdsTrain = imageDatastore(trainFolder, ...
+    'IncludeSubfolders', true, ...
+    'LabelSource', 'foldernames');
+
+inputSize = net.Layers(1).InputSize(1:2);
+augimdsTrain = augmentedImageDatastore(inputSize, imdsTrain);
+
+% 4. Classify all images
+[YPred, scores] = classify(net, augimdsTrain);
+
+% 5. Initialize feature storage
+allFeatures = table;
+
+% 6. Loop over all images
+for i = 1:numel(imdsTrain.Files)
+    thisFile = imdsTrain.Files{i};
+    thisLabel = imdsTrain.Labels(i);
+    thisPred  = YPred(i);
+
+    fprintf('%s --> Predicted: %s, True: %s\n', ...
+        thisFile, string(thisPred), string(thisLabel));
+
+    % --- Match EEG file ---
+    [~, baseName, ~] = fileparts(thisFile);
+    eegFile = fullfile(signalFolder, string(thisLabel), baseName + ".mat");
+
+    if ~isfile(eegFile)
+        warning('EEG file not found: %s', eegFile);
+        continue;
+    end
+
+    % --- Load EEG signal and annotations ---
+    data = load(eegFile);
+    vars = fieldnames(data);
+    eegSignal = data.(vars{1})(:);  % first variable assumed EEG
+
+    % Sampling rate
+    if isfield(data,'Fs')
+        fs = data.Fs;
+    else
+        fs = 256; % fallback default
+    end
+    t = (0:length(eegSignal)-1)/fs;
+
+    % Seizure onset/offset
+    if isfield(data,'seizureOnset') && isfield(data,'seizureOffset')
+        seizureStart = data.seizureOnset;
+        seizureEnd   = data.seizureOffset;
+    else
+        seizureStart = 0;
+        seizureEnd   = t(end);
+    end
+    idxSeizure = (t >= seizureStart & t <= seizureEnd);
+
+    % --- Feature Extraction ---
+    feat.Filename   = string(baseName);
+    feat.TrueLabel  = string(thisLabel);
+    feat.PredLabel  = string(thisPred);
+
+    % Time-domain features
+    feat.Mean_EEG_Amplitude = mean(eegSignal);
+    feat.EEG_Std_Dev        = std(eegSignal);
+    feat.EEG_Skewness        = skewness(eegSignal);
+    feat.EEG_Kurtosis        = kurtosis(eegSignal);
+    feat.Zero_Crossing_Rate  = sum(abs(diff(sign(eegSignal))))/length(eegSignal);
+    feat.Root_Mean_Square    = rms(eegSignal);
+    feat.Peak_to_Peak_Amplitude = peak2peak(eegSignal);
+    feat.Signal_Energy       = sum(eegSignal.^2);
+    feat.Variance_of_EEG_Signals = var(eegSignal);
+    feat.Interquartile_Range = iqr(eegSignal);
+
+    % PSD and band powers
+    [pxx,f] = pwelch(eegSignal,[],[],[],fs);
+    feat.Delta_Band_Power = bandpower(pxx,f,[0.5 4],'psd');
+    feat.Theta_Band_Power = bandpower(pxx,f,[4 8],'psd');
+    feat.Alpha_Band_Power = bandpower(pxx,f,[8 13],'psd');
+    feat.Beta_Band_Power  = bandpower(pxx,f,[13 30],'psd');
+    feat.Gamma_Band_Power = bandpower(pxx,f,[30 45],'psd');
+    feat.Power_Spectral_Density = mean(pxx);
+    feat.Spectral_Entropy = -sum(pxx.*log(pxx+eps));
+    feat.SEF95 = meanfreq(pxx,f);
+    feat.Median_Frequency = medfreq(pxx,f);
+
+    % Line length and spike count
+    feat.Line_Length = sum(abs(diff(eegSignal)));
+    feat.Spike_Count = sum(abs(diff(sign(eegSignal))) > 5);
+
+    % Band power ratios
+    feat.Theta_Alpha_Ratio = feat.Theta_Band_Power / feat.Alpha_Band_Power;
+    feat.Beta_Alpha_Ratio  = feat.Beta_Band_Power  / feat.Alpha_Band_Power;
+    feat.Delta_Theta_Ratio = feat.Delta_Band_Power / feat.Theta_Band_Power;
+    feat.Seizure_Energy_Index = feat.Signal_Energy * feat.Beta_Alpha_Ratio;
+
+    % Hjorth parameters
+    feat.Hjorth_Activity   = var(eegSignal);
+    feat.Hjorth_Mobility   = sqrt(var(diff(eegSignal))/var(eegSignal));
+    feat.Hjorth_Complexity = sqrt(var(diff(diff(eegSignal)))/var(diff(eegSignal))) ...
+                             / feat.Hjorth_Mobility;
+
+    % Wavelet features
+    [c,l] = wavedec(eegSignal,4,'db4');
+    cd = detcoef(c,l,4);
+    feat.Wavelet_Energy   = sum(cd.^2);
+    feat.Wavelet_Entropy  = -sum((cd.^2).*log(cd.^2+eps));
+
+    % Append to feature table
+    allFeatures = [allFeatures; struct2table(feat)];
+
+    % --- Plot EEG with correct seizure duration ---
+    hFig = figure('Visible','off');
+    subplot(2,1,1);
+    imshow(thisFile);
+    title(sprintf('Predicted: %s | True: %s', string(thisPred), string(thisLabel)));
+
+    subplot(2,1,2);
+    plot(t,eegSignal,'b'); hold on;
+    plot(t(idxSeizure), eegSignal(idxSeizure),'r','LineWidth',2);
+    xlabel('Time (s)'); ylabel('Amplitude');
+    title('EEG Signal with Seizure Duration');
+
+    % Save figure
+    saveas(hFig, fullfile(outputPlotFolder, baseName + "_marked.png"));
+    close(hFig);
+end
+
+% 7. Save all features to CSV
+writetable(allFeatures, 'EEG_Features_phase.csv');
+
+% 8. Training Accuracy
+accuracy = mean(YPred == imdsTrain.Labels);
+fprintf('\nTraining Accuracy (Phase) = %.2f%%\n', accuracy*100);
+disp('✅ Feature table saved as EEG_Features.csv');
+disp(['✅ Marked EEG plots saved in folder: ', outputPlotFolder]);
+
+% 8. Compute Confusion Matrix with Metrics
+trueLabels = imdsTrain.Labels;
+predLabels = YPred;
+
+figCM = figure;
+cm = confusionchart(trueLabels, predLabels);
+cm.Title = 'Confusion Matrix for Phase Classification';
+cm.RowSummary = 'row-normalized';
+cm.ColumnSummary = 'column-normalized';
+
+% Metrics calculation
+cmData = cm.NormalizedValues;  
+TP = diag(cmData); FP = sum(cmData,1)'-TP; FN = sum(cmData,2)-TP; TN = 1-(TP+FP+FN);
+sensitivity = TP./(TP+FN); specificity = TN./(TN+FP); precision=TP./(TP+FP);
+f1score = 2*(precision.*sensitivity)./(precision+sensitivity);
+overallAccuracy = mean(predLabels==trueLabels);
+avgSensitivity = mean(sensitivity); avgSpecificity = mean(specificity); avgF1Score = mean(f1score);
+
+metricsStr = sprintf(['Overall Accuracy = %.2f%%\n', ...
+                      'Avg Sensitivity = %.2f%%\n', ...
+                      'Avg Specificity = %.2f%%\n', ...
+                      'Avg F1-score = %.2f%%'], ...
+                      overallAccuracy*100, avgSensitivity*100, ...
+                      avgSpecificity*100, avgF1Score*100);
+
+% Place metrics textbox inside top-right corner of confusion matrix
+dim = [0.6 0.6 0.35 0.3];
+annotation(figCM,'textbox',dim,'String',metricsStr,'FitBoxToText','on', ...
+    'FontSize',12,'FontWeight','bold','BackgroundColor','w','EdgeColor','k');
+
+% Save confusion matrix
+saveas(figCM, 'ConfusionMatrix_Phase_withMetrics.png');
+close(figCM);
+
+% Print overall accuracy
+fprintf('\nOverall Training Accuracy = %.2f%%\n', overallAccuracy*100);
+disp('✅ Confusion matrix image with metrics saved as ConfusionMatrix_Phase_withMetrics.png');
