@@ -1,0 +1,69 @@
+%% --- Seizure Type CNN Training (High Training Accuracy) ---
+clc; clear; close all;
+
+%% 1. Load dataset
+Dataset = imageDatastore('Dataset_type','IncludeSubfolders',true,'LabelSource','foldernames');
+[Training_Dataset, Validation_Dataset] = splitEachLabel(Dataset, 0.8, 'randomized');
+
+%% 2. Load GoogLeNet
+net = googlenet;
+Input_Layer_Size = net.Layers(1).InputSize(1:2);
+
+Resized_Training_Image = augmentedImageDatastore(Input_Layer_Size, Training_Dataset);
+Resized_Validation_Image = augmentedImageDatastore(Input_Layer_Size, Validation_Dataset);
+
+%% 3. Replace final layers
+Feature_Learner = net.Layers(142);
+Output_Classifier = net.Layers(144);
+Number_of_Classes = numel(categories(Training_Dataset.Labels));
+
+New_Feature_Learner = fullyConnectedLayer(Number_of_Classes, ...
+    'Name','Seizure_Feature_Learner', ...
+    'WeightLearnRateFactor',20, ...  % higher LR for fast fitting
+    'BiasLearnRateFactor',20);
+
+New_Classifier_Layer = classificationLayer('Name','Seizure_Classifier');
+
+lgraph = layerGraph(net);
+lgraph = replaceLayer(lgraph,Feature_Learner.Name,New_Feature_Learner);
+lgraph = replaceLayer(lgraph,Output_Classifier.Name,New_Classifier_Layer);
+
+%% 4. Unfreeze some deeper layers (to fit training set harder)
+layersToUnfreeze = {'inception_5b-output','inception_5a-output','inception_4e-output'};
+for i = 1:numel(lgraph.Layers)
+    if isa(lgraph.Layers(i),'nnet.cnn.layer.Convolution2DLayer') ...
+            && any(strcmp(lgraph.Layers(i).Name,layersToUnfreeze))
+        lgraph.Layers(i).WeightLearnRateFactor = 5;
+        lgraph.Layers(i).BiasLearnRateFactor = 5;
+    end
+end
+
+%% 5. Training options (favor training acc)
+miniBatchSize = 16;
+valFrequency = floor(numel(Resized_Training_Image.Files)/miniBatchSize);
+
+options = trainingOptions('sgdm', ...
+    'MiniBatchSize',miniBatchSize, ...
+    'MaxEpochs',100, ...
+    'InitialLearnRate',3e-4, ...
+    'L2Regularization',1e-6, ...  % smaller → less penalty
+    'Shuffle','every-epoch', ...
+    'ValidationData',Resized_Validation_Image, ...
+    'ValidationFrequency',valFrequency, ...
+    'Verbose',false, ...
+    'Plots','training-progress');
+
+%% 6. Train network
+net = trainNetwork(Resized_Training_Image,lgraph,options);
+
+%% 7. Save trained network
+save('trainedGoogLeNetSeizureType.mat','net');
+
+%% 8. Training accuracy
+[YPredTrain,~] = classify(net,Resized_Training_Image);
+trainAcc = mean(YPredTrain == Training_Dataset.Labels);
+fprintf('Training Accuracy = %.2f%%\n',trainAcc*100);
+
+[YPredVal,~] = classify(net,Resized_Validation_Image);
+valAcc = mean(YPredVal == Validation_Dataset.Labels);
+fprintf('Validation Accuracy = %.2f%%\n',valAcc*100);
