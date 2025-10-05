@@ -1,0 +1,72 @@
+%% --- Train Random Forest on EEG Features (Seizure Phase Classification) ---
+clc; clear; close all;
+
+%% 1. Load feature table
+filename = 'EEG_Features_phase.csv';   % <- update file name if needed
+eegFeatureTable = readtable(filename);
+
+% Ensure labels are categorical
+Y = categorical(eegFeatureTable.TrueLabel);
+
+% Extract numeric features only
+numericCols = varfun(@isnumeric, eegFeatureTable, 'OutputFormat','uniform');
+X = eegFeatureTable{:, numericCols};
+
+%% 2. Split into training & testing (80/20 split for realistic accuracy)
+cv = cvpartition(Y, 'HoldOut', 0.2);
+Xtrain = X(training(cv), :);
+Ytrain = Y(training(cv), :);
+Xtest  = X(test(cv), :);
+Ytest  = Y(test(cv), :);
+
+%% 3. Train Random Forest
+nTrees = 200;                        % fewer trees than before
+numFeatures = round(sqrt(size(Xtrain,2)));
+
+RFModel = TreeBagger(nTrees, Xtrain, Ytrain, ...
+    'Method','classification', ...
+    'OOBPrediction','On', ...
+    'MinLeafSize', 10, ...           % 🔑 increase leaf size to reduce overfitting
+    'MaxNumSplits', 50, ...          % 🔑 limit tree depth
+    'NumPredictorsToSample', numFeatures, ...
+    'OOBPredictorImportance','on');
+
+%% 4. Save trained model
+save('Trained_RFModel_Phase.mat', 'RFModel');
+disp('✅ Random Forest model saved as Trained_RFModel_Phase.mat');
+
+%% 5. Evaluate Performance
+% Training accuracy
+[YPredTrain, ~] = predict(RFModel, Xtrain);
+YPredTrain = categorical(YPredTrain);
+trainAcc = mean(YPredTrain == Ytrain);
+
+% Testing accuracy
+[YPredTest, ~] = predict(RFModel, Xtest);
+YPredTest = categorical(YPredTest);
+testAcc = mean(YPredTest == Ytest);
+
+fprintf('✅ Training Accuracy = %.2f%%\n', trainAcc*100);
+fprintf('✅ Testing Accuracy  = %.2f%%\n', testAcc*100);
+
+%% 6. Confusion Matrices
+% Training confusion matrix
+figure;
+cmTrain = confusionchart(Ytrain, YPredTrain);
+cmTrain.Title = 'Random Forest Confusion Matrix - Seizure Phase';
+cmTrain.RowSummary = 'row-normalized';
+cmTrain.ColumnSummary = 'column-normalized';
+
+% Testing confusion matrix
+figure;
+cmTest = confusionchart(Ytest, YPredTest);
+cmTest.Title = 'Confusion Matrix (Seizure Phase - Test Data)';
+cmTest.RowSummary = 'row-normalized';
+cmTest.ColumnSummary = 'column-normalized';
+
+%% 7. Feature Importance
+figure;
+bar(RFModel.OOBPermutedPredictorDeltaError);
+title('Feature Importance (OOB Permuted)');
+xlabel('Feature Index');
+ylabel('Increase in OOB Error');
