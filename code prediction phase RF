@@ -1,0 +1,121 @@
+%% --- RF Prediction on EEG Features (Seizure Phase) + EEG Plots + Metrics ---
+clc; clear; close all;
+
+%% 1. Load trained RF model
+load('Trained_RFModel_Phase.mat', 'RFModel');
+disp('✅ Loaded trained Random Forest model (Seizure Phase).');
+
+%% 2. Load EEG feature table
+filename = 'EEG_Features_phase.csv';   % <-- update with your feature file
+eegFeatureTable = readtable(filename);
+
+% Ensure labels are categorical
+Ytrue = categorical(eegFeatureTable.TrueLabel);
+
+% Extract numeric features only (same as training)
+numericCols = varfun(@isnumeric, eegFeatureTable, 'OutputFormat','uniform');
+X = eegFeatureTable{:, numericCols};
+
+%% 3. Predict using RF model
+YPred = predict(RFModel, X);
+YPred = categorical(YPred);
+
+%% 4. Create output folder for marked EEG plots
+outputPlotFolder = 'Output_EEG_Plots_phase_RF';
+if ~exist(outputPlotFolder,'dir')
+    mkdir(outputPlotFolder);
+end
+
+%% 5. Loop through samples and save EEG + spectrogram plots
+signalFolder = 'Dataset_eeg_phase';  % folder with EEG .mat files
+for i = 1:height(eegFeatureTable)
+    baseName = eegFeatureTable.Filename{i};
+    trueLabel = string(Ytrue(i));
+    predLabel = string(YPred(i));
+
+    eegFile = fullfile(signalFolder, trueLabel, baseName + ".mat");
+    if ~isfile(eegFile)
+        warning('EEG file not found: %s', eegFile);
+        continue;
+    end
+
+    % Load EEG signal
+    data = load(eegFile);
+    vars = fieldnames(data);
+    eegSignal = data.(vars{1})(:);
+
+    % Sampling rate
+    fs = 256;
+    if isfield(data,'Fs')
+        fs = data.Fs;
+    end
+    t = (0:length(eegSignal)-1)/fs;
+
+    % Seizure onset/offset (if available)
+    seizureStart = 0; seizureEnd = t(end);
+    if isfield(data,'seizureOnset') && isfield(data,'seizureOffset')
+        seizureStart = data.seizureOnset;
+        seizureEnd = data.seizureOffset;
+    end
+    idxSeizure = (t >= seizureStart & t <= seizureEnd);
+
+    % Plot EEG + spectrogram
+    hFig = figure('Visible','off','Position',[100 100 900 600]);
+    subplot(2,1,1);
+    plot(t, eegSignal, 'b'); hold on;
+    if any(idxSeizure)
+        plot(t(idxSeizure), eegSignal(idxSeizure), 'r','LineWidth',2);
+    end
+    xlabel('Time (s)'); ylabel('Amplitude');
+    title(sprintf('Predicted Phase: %s | True Phase: %s', predLabel, trueLabel));
+
+    subplot(2,1,2);
+    spectrogram(eegSignal,128,120,128,fs,'yaxis');
+    title('EEG Spectrogram');
+
+    saveas(hFig, fullfile(outputPlotFolder, baseName + "_marked.png"));
+    close(hFig);
+end
+disp(['✅ EEG plots saved in folder: ', outputPlotFolder]);
+
+%% 6. Confusion Matrix + Metrics
+figCM = figure('Position',[100 100 900 600]);
+cmChart = confusionchart(Ytrue, YPred);
+cmChart.Title = 'Random Forest Confusion Matrix - Seizure Phase';
+cmChart.RowSummary = 'row-normalized';
+cmChart.ColumnSummary = 'column-normalized';
+
+% Compute metrics
+C = confusionmat(Ytrue, YPred);
+TP = diag(C);
+FP = sum(C,1)' - TP;
+FN = sum(C,2) - TP;
+TN = sum(C(:)) - (TP+FP+FN);
+
+sensitivity = TP ./ (TP + FN);
+specificity = TN ./ (TN + FP);
+precision   = TP ./ (TP + FP);
+f1score     = 2*(precision .* sensitivity) ./ (precision + sensitivity);
+
+overallAccuracy = mean(Ytrue==YPred);
+
+% Display metrics box on plot
+metricsStr = sprintf(['Overall Accuracy = %.2f%%\n', ...
+                      'Avg Sensitivity = %.2f%%\n', ...
+                      'Avg Specificity = %.2f%%\n', ...
+                      'Avg F1-score = %.2f%%'], ...
+                      overallAccuracy*100, mean(sensitivity)*100, ...
+                      mean(specificity)*100, mean(f1score)*100);
+
+dim = [0.72 0.15 0.25 0.25];
+annotation(figCM,'textbox',dim,'String',metricsStr,'FitBoxToText','on', ...
+    'FontSize',12,'FontWeight','bold','BackgroundColor','w','EdgeColor','k');
+
+saveas(figCM, 'RF_Phase_ConfusionMatrix_withMetrics.png');
+disp('✅ Confusion matrix with metrics saved as RF_Phase_ConfusionMatrix_withMetrics.png');
+
+%% 7. Final summary in console
+fprintf('\n✅ Overall Accuracy = %.2f%%\n', overallAccuracy*100);
+fprintf('✅ Average Sensitivity = %.2f%%\n', mean(sensitivity)*100);
+fprintf('✅ Average Specificity = %.2f%%\n', mean(specificity)*100);
+fprintf('✅ Average F1-score = %.2f%%\n', mean(f1score)*100);
