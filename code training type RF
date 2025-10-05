@@ -1,0 +1,51 @@
+%% --- Train Random Forest on EEG Features (Type) with Slightly Reduced Training Accuracy ---
+clc; clear; close all;
+
+%% 1. Load feature table
+filename = 'EEG_Features_type.csv';
+eegFeatureTable = readtable(filename);
+
+% Ensure label is categorical
+Y = categorical(eegFeatureTable.TrueLabel);
+
+% Use all numeric columns
+numericCols = varfun(@isnumeric, eegFeatureTable, 'OutputFormat','uniform');
+X = eegFeatureTable{:, numericCols};
+
+%% 2. Train/Test Split (optional)
+Xtrain = X;
+Ytrain = Y;
+
+%% 3. Train Random Forest with controlled overfitting
+nTrees = 600;          % slightly fewer trees
+RFModel = TreeBagger(nTrees, Xtrain, Ytrain, ...
+    'Method', 'classification', ...
+    'OOBPrediction', 'On', ...
+    'MinLeafSize', 5, ...            % increase leaf size to reduce overfitting
+    'NumPredictorsToSample', 8, ...  % sample subset of features each split
+    'OOBPredictorImportance', 'on');
+
+%% 4. Save trained model
+save('Trained_RFModel_Type_Realistic.mat', 'RFModel');
+disp('✅ Random Forest model saved as Trained_RFModel_Type_Realistic.mat');
+
+%% 5. Evaluate Training Accuracy
+[YPredTrain, scoresTrain] = predict(RFModel, Xtrain);
+YPredTrain = categorical(YPredTrain);
+
+trainAccuracy = mean(YPredTrain == Ytrain);
+fprintf('✅ Training Accuracy = %.2f%%\n', trainAccuracy*100);
+
+%% 6. Confusion Matrix
+figure;
+cm = confusionchart(Ytrain, YPredTrain);
+cm.Title = 'Confusion Matrix (Training Data)';
+cm.RowSummary = 'row-normalized';
+cm.ColumnSummary = 'column-normalized';
+
+%% 7. Feature Importance
+figure;
+bar(RFModel.OOBPermutedPredictorDeltaError);
+title('Feature Importance (OOB Permuted)');
+xlabel('Feature Index');
+ylabel('Increase in OOB Error');
