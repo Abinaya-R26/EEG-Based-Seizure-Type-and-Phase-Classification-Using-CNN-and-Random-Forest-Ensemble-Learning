@@ -1,0 +1,111 @@
+clc; clear; close all;
+
+% Input dataset path (EEG .mat files organized folder by folder)
+inputFolder = 'Test_MAT';          % <-- change this to your dataset folder
+outputFolder = 'Spectrogram_Images';  % folder to save spectrogram images
+fs = 256;   % sampling frequency
+
+% Create output folder if it doesn’t exist
+if ~exist(outputFolder, 'dir')
+    mkdir(outputFolder);
+end
+
+% Get list of subfolders (classes like ictal, normal, etc.)
+subfolders = dir(inputFolder);
+subfolders = subfolders([subfolders.isdir]); 
+subfolders = subfolders(~ismember({subfolders.name},{'.','..'}));
+
+% Loop through each class folder
+for k = 1:length(subfolders)
+    className = subfolders(k).name;
+    classInputPath = fullfile(inputFolder, className);
+    classOutputPath = fullfile(outputFolder, className);
+
+    % Create class folder in output
+    if ~exist(classOutputPath, 'dir')
+        mkdir(classOutputPath);
+    end
+
+    % Get .mat files in this class folder
+    files = dir(fullfile(classInputPath, '*.mat'));
+
+    for i = 1:length(files)
+        filePath = fullfile(classInputPath, files(i).name);
+        S = load(filePath);
+        varNames = fieldnames(S);
+        x = S.(varNames{1});  % signal
+
+        % Compute spectrogram
+        window = 128; noverlap = 120; nfft = 256;
+        [s, f, t, ps] = spectrogram(x, window, noverlap, nfft, fs);
+        psd = 10*log10(abs(ps));
+
+        % Plot spectrogram (no axis)
+        fig = figure('Visible','off');
+        surf(t, f, psd, 'EdgeColor','none');
+        axis tight; view(0,90);
+        colormap jet; axis off;
+
+        % Save image
+        frame = getframe(gca);
+        img = frame2im(frame);
+        img = imresize(img, [224 224]);   % resize to GoogLeNet input size
+
+        [~,name,~] = fileparts(files(i).name);
+        imwrite(img, fullfile(classOutputPath, [name '.png']));
+
+        close(fig);
+    end
+end
+
+disp('✅ Spectrogram images (224x224) generated successfully.');
+
+
+
+%% 
+clc; clear;
+
+inputFolder = fullfile(pwd,'Test_MAT');            % folder with .mat files
+outputFolder = fullfile(pwd,'Spectrogram_Images'); % folder to save PNGs
+fs = 256;                                         % EEG sampling rate
+
+if ~exist(outputFolder,'dir')
+    mkdir(outputFolder);
+end
+
+% Get all .mat files in the folder (no subfolders needed)
+files = dir(fullfile(inputFolder,'*.mat'));
+
+for i = 1:length(files)
+    filePath = fullfile(inputFolder, files(i).name);
+    S = load(filePath);
+
+    if ~isfield(S,'IMF3')
+        warning('Skipping %s: no IMF3 field', files(i).name);
+        continue;
+    end
+
+    x = S.IMF3(:);
+
+    % Compute spectrogram
+    [~,~,~,ps] = spectrogram(x,256,200,256,fs);
+
+    % Convert to grayscale image 0-1
+    img = mat2gray(10*log10(abs(ps)+eps));
+
+    % Resize to GoogLeNet input
+    img = imresize(img,[224 224]);
+
+    % Convert to RGB using jet colormap
+    imgRGB = ind2rgb(im2uint8(img),jet(256));
+
+    % Save PNG
+    outFile = fullfile(outputFolder,[files(i).name(1:end-4) '.png']);
+    imwrite(imgRGB,outFile);
+
+    fprintf('✅ Saved: %s\n', outFile);
+end
+
+disp('🎉 All spectrogram images saved successfully.');
+
+
